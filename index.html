@@ -1,4 +1,3 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Billing Report</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600;700&display=swap">
@@ -82,15 +81,23 @@ button.tab:focus-visible{outline:2px solid var(--billed);outline-offset:2px}
 .ptable .bar2 i{display:block;height:100%;background:var(--billed)}
 .ptable td.lowbill{color:var(--warn)}
 .head-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+
+.livebar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;font-size:12.5px;color:var(--muted)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:0}
+.dot.on{background:var(--good)} .dot.off{background:var(--balance)}
+.livebar button{font:inherit;font-size:12px;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:4px;padding:3px 10px;cursor:pointer}
+.livebar button:focus-visible{outline:2px solid var(--billed);outline-offset:2px}
+.tile .val{font-size:22px;overflow-wrap:anywhere}
+.tile .def{color:var(--muted);font-size:11.5px;margin-top:6px}
 </style>
 
 <div class="wrap">
   <header>
     <div>
       <h1>Billing Report</h1>
-      <p class="sub">Activations from Jan 1 to Oct 19, 2026. Amounts use the SLI Fee column.</p>
+      <p class="sub">All activations in the billing sheet. Amounts are activations multiplied by the SLI Fee.</p>
     </div>
-    <div class="asof">Data pulled Oct 20, 2026</div>
+    <div class="livebar"><span><span class="dot" id="dot"></span><span id="livetxt">Loading</span></span><button id="refresh" type="button">Refresh now</button></div>
   </header>
 
   <section class="tiles" id="tiles" aria-label="Summary"></section>
@@ -98,8 +105,8 @@ button.tab:focus-visible{outline:2px solid var(--billed);outline-offset:2px}
   <section class="card">
     <div class="head-row">
       <div>
-        <h2>SLI Fee by activation month</h2>
-        <p class="hint">Billed versus balance, in millions of pesos. October is partial (Oct 1 to 19).</p>
+        <h2>By activation month</h2>
+        <p class="hint">Billed versus balance. The latest month is still running.</p>
       </div>
       <div role="group" aria-label="Chart view">
         <button class="tab" id="v-amt" aria-pressed="true" type="button">Amount</button>
@@ -107,7 +114,7 @@ button.tab:focus-visible{outline:2px solid var(--billed);outline-offset:2px}
       </div>
     </div>
     <div class="legend"><span><i style="background:var(--billed)"></i>Billed</span><span><i style="background:var(--balance)"></i>Balance</span></div>
-    <svg id="monthly" viewBox="0 0 760 300" role="img" aria-label="Monthly billed and balance SLI fees"></svg>
+    <svg id="monthly" viewBox="0 0 760 300" role="img" aria-label="Monthly billed and balance"></svg>
     <div class="tablewrap"><table id="mtable"></table></div>
   </section>
 
@@ -125,7 +132,6 @@ button.tab:focus-visible{outline:2px solid var(--billed);outline-offset:2px}
     </section>
   </div>
 
-
   <section class="card" id="partner-card">
     <div class="head-row">
       <div>
@@ -137,165 +143,213 @@ button.tab:focus-visible{outline:2px solid var(--billed);outline-offset:2px}
     <div class="tablewrap ptable"><table id="ptable"></table></div>
   </section>
 
-  <p class="foot">Source: the billing Google Sheet, 120,696 activation rows. SLI Fee is the billable amount; SKU is the amount the customer paid. Partner amounts are activations multiplied by the SLI Fee on each row.</p>
+  <p class="foot">Source: the billing Google Sheet. SLI Fee is the billable amount; SKU is the amount the customer paid. Closing rate is billed activations divided by billed plus balance activations.</p>
 </div>
 <div id="tip" role="status"></div>
 
+<script id="core">
+var MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function cv(c){return (c&&c.v!==undefined&&c.v!==null)?c.v:null}
+function norm(s){return String(s==null?"":s).trim().toUpperCase()}
+function addTo(o,k,n){o[k]=(o[k]||0)+n}
+function parseDate(v){var m=/^Date\((\d+),(\d+),(\d+)/.exec(String(v));return m?{y:+m[1],m:+m[2]}:null}
+function amt(o){var t=0;for(var k in o)t+=parseFloat(k)*o[k];return t}
+function cnt(o){var t=0;for(var k in o)t+=o[k];return t}
+// Query tables -> model. days: A,I,G,count; stat: I,J,G,count; part: H,I,G,count; cat: K,count (balance rows only)
+function buildModel(days,stat,part,cat){
+  var mm={};
+  days.rows.forEach(function(r){
+    var d=parseDate(cv(r.c[0])),st=norm(cv(r.c[1])),fee=parseFloat(cv(r.c[2])),n=cv(r.c[3]);
+    if(!d||!(st==="BILLED"||st==="BALANCE")||isNaN(fee)||!n)return;
+    var k=d.y*12+d.m,o=mm[k]||(mm[k]={y:d.y,m:d.m,bal:{},bil:{}});
+    addTo(st==="BILLED"?o.bil:o.bal,fee,n);
+  });
+  var keys=Object.keys(mm).map(Number).sort(function(a,b){return a-b});
+  var multi=keys.length&&(mm[keys[0]].y!==mm[keys[keys.length-1]].y);
+  var months=keys.map(function(k){var o=mm[k];return{label:MON[o.m]+(multi?" "+String(o.y).slice(2):""),bal:o.bal,bil:o.bil}});
+  var status=[];
+  stat.rows.forEach(function(r){
+    var i=norm(cv(r.c[0])),j=norm(cv(r.c[1])),fee=parseFloat(cv(r.c[2])),n=cv(r.c[3]);
+    if((i==="BILLED"||i==="BALANCE")&&!isNaN(fee)&&n)status.push([i,j||"(BLANK)",fee,n]);
+  });
+  var pm={};
+  part.rows.forEach(function(r){
+    var name=cv(r.c[0])||"(No partner on record)",st=norm(cv(r.c[1])),fee=parseFloat(cv(r.c[2])),n=cv(r.c[3]);
+    if(!(st==="BILLED"||st==="BALANCE")||isNaN(fee)||!n)return;
+    var o=pm[name]||(pm[name]={name:name,bil:{},bal:{}});
+    addTo(st==="BILLED"?o.bil:o.bal,fee,n);
+  });
+  var noReport=0;
+  cat.rows.forEach(function(r){if(norm(cv(r.c[0]))==="NO REPORT")noReport+=cv(r.c[1])||0});
+  return{months:months,status:status,partners:Object.keys(pm).map(function(k){return pm[k]}),noReport:noReport};
+}
+function fromSnap(S){
+  var FE=[360.5,650,700];
+  function d(a){var o={};a.forEach(function(c,i){if(c)o[FE[i]]=c});return o}
+  return{months:S.months.map(function(m){return{label:m[0],bal:m[1],bil:m[2]}}),
+    status:S.status,
+    partners:S.parts.map(function(p){return{name:p[0],bil:d(p[1]),bal:d(p[2])}}),
+    noReport:S.noReport};
+}
+</script>
+
 <script>
 (function(){
-  // month: [label, balance{fee:count}, billed{fee:count}]
-  var M=[
-    ["Jan",{700:968},{700:22909}],
-    ["Feb",{700:892},{700:20676}],
-    ["Mar",{700:1282},{700:14193}],
-    ["Apr",{650:1223,700:176},{650:11114,700:1551}],
-    ["May",{650:371,700:400},{650:2594,700:4803}],
-    ["Jun",{650:367,700:499},{650:2912,700:4922}],
-    ["Jul",{650:540,700:868},{650:3206,700:4056}],
-    ["Aug",{360.5:17,650:596,700:1103},{360.5:34,650:2856,700:3163}],
-    ["Sep",{360.5:22,650:1104,700:1100},{360.5:28,650:3972,700:1567}],
-    ["Oct",{360.5:30,650:2772,700:1280},{650:469,700:60}]
-  ];
-  function sum(o,money){var t=0;for(var k in o){t+=o[k]*(money?parseFloat(k):1)}return t}
-  var rows=M.map(function(m){return{m:m[0],balA:sum(m[1],1),bilA:sum(m[2],1),balC:sum(m[1]),bilC:sum(m[2])}});
-  var T={balA:0,bilA:0,balC:0,bilC:0};
-  rows.forEach(function(r){for(var k in T)T[k]+=r[k]});
-  var NODATE={balA:700,balC:1}; // one balance row has no activation date
-  T.balA+=NODATE.balA; T.balC+=NODATE.balC;
-  var totA=T.balA+T.bilA, totC=T.balC+T.bilC;
+  var SHEET="1Dzh1wP7xhi2_ynm33t2s2t06fG1e_UBqi7J5OfEaneQ", GID=0, REFRESH_MS=60000;
+  var SNAP={"asof":"Oct 20, 2026","months":[["Jan",{"700":968},{"700":22909}],["Feb",{"700":892},{"700":20676}],["Mar",{"700":1282},{"700":14193}],["Apr",{"650":1223,"700":176},{"650":11114,"700":1551}],["May",{"650":371,"700":400},{"650":2594,"700":4803}],["Jun",{"650":367,"700":499},{"650":2912,"700":4922}],["Jul",{"650":540,"700":868},{"650":3206,"700":4056}],["Aug",{"360.5":17,"650":596,"700":1103},{"360.5":34,"650":2856,"700":3163}],["Sep",{"360.5":22,"650":1104,"700":1100},{"360.5":28,"650":3972,"700":1567}],["Oct",{"360.5":30,"650":2772,"700":1280},{"650":469,"700":60}]],"status":[["BALANCE","CLOSED",700,22],["BALANCE","COMPLIANCE",360.5,3],["BALANCE","COMPLIANCE",650,1472],["BALANCE","COMPLIANCE",700,2916],["BALANCE","PENDING",360.5,66],["BALANCE","PENDING",650,5501],["BALANCE","PENDING",700,5631],["BILLED","CLOSED",360.5,62],["BILLED","CLOSED",650,27123],["BILLED","CLOSED",700,77715],["BILLED","PENDING",700,185]],"parts":[["0208 Trading",[4,394,910],[1,44,88]],["104PCL Internet and Cable Installation Services - Bicol",[0,47,42],[0,11,0]],["104PCL Internet and Cable Installation Services - Bulacan",[0,33,52],[0,7,7]],["104PCL Internet and Cable Installation Services - Leyte",[1,136,130],[0,20,8]],["104PCL Internet and Cable Installation Services - NCR",[0,80,174],[0,14,9]],["3TKVS Enterprise",[0,37,171],[0,19,27]],["A&R CCTV AND COMPUTER INSTALLATION SERVICES - Cam Norte",[0,112,466],[0,126,18]],["A&R CCTV AND COMPUTER INSTALLATION SERVICES - Cam Sur",[0,24,176],[0,6,15]],["A. Narvaes Albay+Masbate",[0,291,253],[0,112,87]],["A. Narvaes Bulacan",[0,0,4],[0,0,0]],["A. Narvaes Sorsogon+Camsur",[0,406,252],[0,89,46]],["A2A INTERNET INSTALLATION SERVICES",[0,42,84],[0,29,3]],["AAMIT Batangas",[0,83,411],[0,17,27]],["AAMIT Oriental Mindoro",[0,84,277],[0,46,41]],["Accel Cyber Link Bataan",[0,74,162],[0,32,8]],["Adria Telecom Cavite",[0,38,161],[0,4,6]],["Adria Telecom NCR",[0,15,117],[0,0,2]],["AJ TRADING",[0,197,236],[3,169,36]],["AQZ Internet Installation Services",[0,0,0],[0,0,6]],["BBEE Aurora",[0,0,57],[0,0,11]],["BBEE Nueva Ecija",[0,516,534],[0,180,88]],["BBEE Zamboanga Del Sur",[0,0,0],[0,45,14]],["Bignay IIS Laguna",[0,4,155],[0,22,49]],["BMS Nueva Ecija",[0,0,12],[0,1,1]],["Bryth Electronic and Telecommunication Parts and Equipment Retailing Batangas",[0,19,82],[0,1,12]],["Bryth Electronic and Telecommunication Parts and Equipment Retailing Cam Sur & Albay",[0,225,2825],[0,34,852]],["Bryth Electronic and Telecommunication Parts and Equipment Retailing Sorsogon & Masbate",[0,243,771],[0,100,176]],["CBL Fiber Internet and Installation Services",[0,0,0],[0,0,24]],["Charity Faye Satellite Services",[0,42,34],[0,12,0]],["Crown Deluxe Baguio",[0,0,12],[0,0,0]],["DBS Abra",[0,0,6],[0,0,0]],["DBS Apayao",[0,3,65],[0,3,11]],["DBS Aurora",[0,0,105],[0,0,2]],["DBS Bulacan",[0,100,11],[0,3,0]],["DBS Cagayan",[0,283,1232],[0,115,137]],["DBS Ilocos Norte",[0,180,1158],[0,79,89]],["DBS Ilocos Sur",[0,123,313],[1,2,9]],["DBS Isabela+Nueva Vizcaya",[0,466,2872],[0,114,253]],["DBS Kalinga",[0,27,324],[0,15,53]],["DBS Nueva Ecija",[0,388,2359],[0,50,30]],["DBS Pangasinan+Zambales",[0,212,1741],[0,75,95]],["DBS Quirino",[0,0,36],[0,0,0]],["DBS Tarlac",[0,15,0],[0,2,0]],["DDM Skyline Batangas",[0,0,58],[0,46,164]],["DDM Skyline Cavite",[0,0,152],[0,5,21]],["DDM Skyline Negros",[0,22,183],[0,22,23]],["DIS Aurora",[0,8,80],[0,17,22]],["DIS Tarlac",[0,37,205],[0,19,54]],["Doi Network And Data Solutions - Bukidnon",[0,97,233],[0,39,54]],["Doi Network And Data Solutions - CDO",[0,0,24],[0,0,0]],["Doi Network And Data Solutions - Cebu",[0,26,77],[0,15,21]],["Doi Network And Data Solutions - Leyte",[0,48,9],[0,55,9]],["Doi Network And Data Solutions - Zamboanga",[0,9,69],[0,4,28]],["El Bimbo Batangas",[0,133,106],[0,32,1]],["EMC2 CONNECT & SERVICES",[0,0,0],[0,2,35]],["F. ALCANTARA VARIETY STORE Albay",[0,35,105],[0,19,21]],["F. ALCANTARA VARIETY STORE Isabela",[0,27,387],[0,15,36]],["F. ALCANTARA VARIETY STORE Nueva Ecija",[0,87,533],[0,20,91]],["Four SRD",[0,0,33],[0,0,1]],["Golden Mountain Laguna",[0,185,183],[0,28,6]],["GR Atienza",[0,11,111],[0,2,15]],["HRJED Construction Services",[0,4,10],[0,22,16]],["Iconnect Fiber Wired Internet Services",[0,10,67],[0,7,13]],["Internal Team NCRR",[0,0,1],[5,23,114]],["Interpole Internet Installation Services",[0,36,509],[0,5,67]],["iSolve Business Technologies, Inc.",[0,203,125],[0,61,11]],["J Marcus Aurora",[0,16,122],[0,8,7]],["J Marcus Batangas",[0,18,60],[0,1,5]],["J Marcus Bulacan",[0,0,88],[0,0,2]],["J Marcus Cagayan",[0,13,116],[0,4,16]],["J Marcus Cavite",[0,37,50],[0,11,19]],["J Marcus Davao",[0,0,61],[0,0,22]],["J Marcus Ifugao",[0,53,340],[0,28,29]],["J Marcus Ilocos Norte",[0,29,203],[0,15,11]],["J Marcus Ilocos Sur",[0,64,636],[0,37,99]],["J Marcus Isabela",[0,58,441],[0,19,13]],["J Marcus La Union",[0,57,462],[0,11,17]],["J Marcus Leyte",[0,12,146],[0,8,26]],["J Marcus Nueva Ecija",[0,55,232],[0,59,17]],["J Marcus Nueva Vizcaya",[0,92,985],[0,26,50]],["J Marcus Oriental Mindoro",[0,24,190],[0,0,12]],["J Marcus Palawan",[0,5,180],[0,1,41]],["J Marcus Pampanga",[0,0,15],[0,0,0]],["J Marcus Pangasinan",[0,11,177],[0,1,17]],["J Marcus South Cotabato",[0,0,26],[1,0,16]],["J Marcus Tarlac",[0,13,123],[0,3,12]],["J Marcus Zambales",[0,77,604],[0,22,25]],["J Marcus Zamboanga Del Sur",[0,28,127],[0,10,22]],["J.E.D Store",[0,20,104],[0,14,18]],["Jaincto Masbate",[0,0,0],[0,22,95]],["JC Tech's Prepaid Fiber NCR",[0,0,84],[0,0,0]],["KCRR Enterprise Cam Sur+Quezon",[0,68,235],[0,65,98]],["KCRR Enterprise Cavite",[0,0,2],[0,0,2]],["KCRR Enterprise NCRR",[0,0,48],[0,1,19]],["KFB Batangas",[0,214,1274],[0,77,54]],["KFB Laguna",[0,91,346],[0,27,22]],["KFB NCRR",[0,0,1],[0,0,1]],["KFB Oriental Mindoro",[0,96,418],[0,99,73]],["KIMs Aurora",[0,0,6],[0,0,5]],["KIMs Bataan",[0,0,161],[0,0,1]],["KIMs Cagayan",[0,54,679],[0,11,264]],["KIMs Pampanga",[0,9,181],[0,2,30]],["KIMs Tarlac",[0,19,310],[0,5,32]],["KIMs Zambales",[0,27,166],[0,4,24]],["Kubera Nueva Ecija",[0,71,219],[11,120,68]],["LK102 - LK INFINITY",[0,155,33],[0,30,0]],["LK102 - LK102 QC PROJECT 7",[0,0,11],[0,0,2]],["LK102 - LKB&B Caloocan",[0,135,101],[0,35,6]],["LK102 - LKGV Binangonan",[0,0,331],[0,0,12]],["LK102 - LKTAH Antipolo",[0,0,24],[0,0,0]],["LK102 - PxLKAA Malate 1",[0,13,16],[0,32,13]],["LK102 - PxLKCZ_Antipolo1",[0,1,8],[0,0,2]],["LK102 - PxLKVE Rodriguez 1",[0,0,1],[0,1,0]],["LK102 - Taguig 1",[0,72,214],[0,51,10]],["M4KE Internet Installation Services NCR",[0,0,0],[0,0,0]],["Maestro Enterprise",[0,63,109],[0,19,6]],["MATT21 - Isabela",[0,6,17],[0,6,2]],["MATT21 - NCRR",[0,1612,4439],[1,516,323]],["MBE Starlink Daet",[0,96,279],[0,36,27]],["Moonstar Nine -9 Marketing Campaign Services - Ilocos Norte",[2,543,439],[2,87,18]],["NOAH IT Services Batangas",[4,148,128],[0,37,6]],["Otso Fiberr Internet and Cable Installation Services",[0,0,43],[0,130,28]],["Ourtech - Bicol",[0,0,9],[0,0,0]],["Ourtech - Surigao",[0,46,86],[0,1,0]],["Ourtech Benguet",[0,55,214],[0,10,0]],["Ourtech Cagayan",[1,64,50],[0,9,0]],["Ourtech Cavite",[0,1,50],[0,0,0]],["Ourtech Davao",[2,16,135],[1,1,0]],["Ourtech Ilocos Norte",[0,10,5],[0,0,0]],["Ourtech Isabela",[0,0,8],[0,0,0]],["Ourtech La Union",[0,6,29],[0,0,0]],["Ourtech Occidental Mindoro",[1,51,92],[0,6,1]],["Ourtech Palawan",[0,147,65],[0,16,3]],["Ourtech Pangasinan",[0,467,718],[0,27,1]],["Ourtech Tarlac",[0,52,37],[0,4,0]],["P. Tanzo CamSur+CamNorte",[0,24,192],[3,127,225]],["P. Tanzo Sorsogon+Albay",[0,18,368],[0,22,158]],["Panlock Corporation",[0,194,75],[0,5,3]],["Pits Telecom Cavite",[0,136,765],[0,9,9]],["PxRHK Alicia 1",[0,0,10],[0,0,12]],["PxRHK Alicia Isabela",[0,0,0],[0,8,1]],["PxRHK Bataan 1",[0,2,20],[0,1,1]],["PxRHK Batangas 1",[0,19,101],[0,6,3]],["PxRHK Batangas 3",[2,65,87],[0,2,2]],["PxRHK Bayambang 1",[0,14,55],[0,10,6]],["PxRHK Bulacan 1",[0,39,44],[0,0,0]],["PxRHK Bulacan 2",[0,230,339],[0,9,2]],["PxRHK Bulacan 3",[0,751,351],[0,41,1]],["PxRHK Bulacan 5",[0,134,13],[0,2,2]],["PxRHK Bulacan 6",[0,0,3],[0,6,0]],["PxRHK Calasiao 1",[0,520,316],[0,41,10]],["PxRHK Daet 1",[0,20,59],[1,6,3]],["PxRHK Dagupan",[0,3,31],[2,14,6]],["PxRHK Dasma Cavite",[0,15,33],[0,0,0]],["PxRHK Ilocos Norte 1",[0,23,41],[0,5,28]],["PxRHK Ilocos Sur 1",[0,0,6],[1,84,26]],["PxRHK Isabela 1",[0,0,2],[0,0,0]],["PxRHK Lumban 1",[0,0,0],[0,11,5]],["PxRHK Nagcarlan 1",[0,16,50],[0,27,20]],["PxRHK Oriental Mindoro 1",[0,13,127],[0,11,49]],["PxRHK Pagudpud",[0,25,28],[0,10,4]],["PxRHK Pampanga 1",[0,0,9],[0,17,10]],["PxRHK Sorsogon 1",[0,63,131],[0,0,0]],["PxRHK Sorsogon 2",[0,62,141],[0,6,0]],["PxRHK Tarlac 2",[0,46,74],[0,3,3]],["R.E.A. INTERNET AND CABLE INSTALLATION SERVICES",[0,74,417],[0,60,11]],["R.E.G. INTERNET INSTALLATION SERVICES",[0,112,90],[0,36,16]],["REIGARTKGR INTERNET&CABLE INSTALLATION SERVICES",[0,17,113],[0,1,5]],["Reynon Internet Installation Services",[0,11,38],[0,24,4]],["RHK Albay",[0,196,345],[0,3,3]],["RHK Albay 2",[0,130,330],[0,10,3]],["RHK Apayao",[0,410,343],[0,19,0]],["RHK Aurora",[0,204,114],[0,12,0]],["RHK Bacolod 1",[0,7,65],[0,10,9]],["RHK Balanga",[0,97,386],[0,2,0]],["RHK Balanga 2",[0,378,3],[0,31,0]],["RHK Bayawan",[0,101,609],[0,17,18]],["RHK Bulacan 1 MDela Cruz",[0,264,318],[0,1,0]],["RHK Bulacan 4",[0,28,14],[0,0,2]],["RHK Calauag Quezon",[1,72,107],[0,14,6]],["RHK Camsur",[0,1,60],[0,0,0]],["RHK Camsur2",[0,9,106],[0,0,0]],["RHK Camsur3",[0,88,220],[0,11,0]],["RHK Camsur4",[0,99,204],[0,9,4]],["RHK Catanauan Quezon",[0,124,25],[0,3,3]],["RHK Daet 2",[0,13,28],[0,7,9]],["RHK GenSan",[0,0,49],[0,0,44]],["RHK Ilocos Norte 1",[0,86,54],[0,11,1]],["RHK Iriga 1",[1,162,105],[0,13,8]],["RHK Isabela",[0,2,0],[0,0,0]],["RHK Lopez Quezon 1",[0,0,9],[0,0,0]],["RHK Lucena 2 Quezon-Macabuhay",[0,3,1],[0,7,1]],["RHK Lucena Quezon 1",[0,32,77],[0,32,6]],["RHK Meycauayan",[0,10,51],[0,3,4]],["RHK MILAOR Camsur",[0,4,15],[0,0,0]],["RHK Mulanay Quezon",[3,98,159],[0,18,1]],["RHK Negros Occidental",[0,1,16],[0,0,0]],["RHK Nueva Ecija",[0,0,12],[0,0,3]],["RHK Nueva Vizcaya 1",[0,32,34],[0,4,0]],["RHK Nueva Vizcaya 2 (Solano1)",[0,4,17],[0,1,0]],["RHK Pagbilao Quezon",[0,68,96],[0,59,2]],["RHK Pampanga 2",[0,0,8],[0,0,1]],["RHK Pampanga 3",[0,1,15],[0,0,3]],["RHK Pangasinan",[0,92,71],[0,18,15]],["RHK Polangui 1 (Albay)",[0,5,22],[6,16,17]],["RHK Quezon",[0,81,409],[0,0,4]],["RHK Quirino 1",[0,0,3],[0,14,7]],["RHK Sariaya Quezon 1",[0,0,2],[0,0,0]],["RHK Sorsogon1",[0,123,304],[0,12,1]],["RHK Sorsogon2",[0,38,118],[0,4,0]],["RHK Sorsogon3",[0,76,240],[0,12,0]],["RHK Sorsogon4 (Bulan1)",[0,65,55],[0,2,0]],["RHK Tarlac 1",[0,0,15],[0,0,0]],["RHK Tarlac 3",[0,5,1],[0,0,0]],["RHK Zambales",[0,9,32],[0,2,0]],["RHP Pangasinan",[0,0,3],[0,2,20]],["RNB Enterprises NCR",[0,111,547],[0,61,41]],["Romeo Online Store - Cavite",[0,50,301],[0,116,156]],["S2S Sancaman Telephone Base Informations Bohol",[0,6,27],[0,4,11]],["S2S Sancaman Telephone Base Informations Olongapo",[0,23,239],[0,81,170]],["S2S Sancaman Telephone Base Informations Tarlac",[0,38,227],[0,8,195]],["SER EDZ Cable Television Installation Services",[0,2,42],[0,142,49]],["SIRRES.TECH INTERNET INSTALLATION SERVICES",[0,94,633],[0,2,28]],["SJEJ Enterprise Laguna",[0,0,70],[0,0,54]],["SL & AJ Son's - CAVITE",[0,83,142],[0,4,2]],["SOUTH KONEK",[0,54,109],[0,6,0]],["SpeedSync88 Bataan",[0,0,8],[0,0,0]],["SpeedSync88 Pampanga",[0,15,172],[0,3,43]],["SpeedSync88 Zambales",[0,45,283],[0,23,78]],["Speedy Net - 5C NOGOT (Caloocan)",[0,32,32],[0,1,5]],["Speedy Net - 5C NOGOT (Cam Norte)",[0,23,111],[0,2,4]],["Speedy Net - AE Fabrixervices (CamSur)",[0,0,0],[0,0,36]],["Speedy Net - AYOS (Cavite)",[0,530,813],[0,44,32]],["Speedy Net - Belfast (Cavite)",[0,202,463],[0,13,1]],["Speedy Net - Digital Solution (Capiz)",[0,0,6],[0,0,23]],["Speedy Net - E-Surge (Camsur)",[1,223,269],[0,45,2]],["Speedy Net - Evn It (Mindoro)",[0,0,0],[0,0,11]],["Speedy Net - Fax (Bulacan)",[0,66,114],[0,3,8]],["Speedy Net - GZO Information Tech (Quezon)",[0,31,164],[0,1,10]],["Speedy Net - H&V (Pili)",[3,209,156],[2,67,0]],["Speedy Net - H&V Bacon (Sorsogon)",[3,146,103],[1,3,1]],["Speedy Net - H&V Draga (Albay)",[2,393,163],[0,2,0]],["Speedy Net - Interpole (Barangka)",[0,168,125],[0,40,1]],["Speedy Net - Interpole (Bataan)",[0,127,305],[0,85,36]],["Speedy Net - Interpole (Batasan)",[0,75,489],[0,3,42]],["Speedy Net - Interpole (Cebu)",[0,0,14],[0,0,0]],["Speedy Net - Interpole (Gen. Luna)",[0,101,959],[0,4,45]],["Speedy Net - Interpole (Hy-Tech Palawan)",[21,121,37],[14,1,0]],["Speedy Net - Interpole (Ikonnect Cebu)",[0,0,0],[0,0,2]],["Speedy Net - Interpole (Ilocos Sur)",[0,248,409],[0,4,42]],["Speedy Net - Interpole (J3Spark)",[0,1,52],[0,5,1]],["Speedy Net - Interpole (Lezevach QC)",[0,0,0],[1,37,7]],["Speedy Net - Interpole (Morong Rizal)",[0,50,502],[0,5,12]],["Speedy Net - J&J IIS (Camarines Sur)",[0,0,42],[0,0,6]],["Speedy Net - JAG (Tarlac)",[0,54,92],[0,13,5]],["Speedy Net - Joerider (NCRR)",[0,0,52],[0,0,3]],["Speedy Net - Kdegz (CamSur)",[0,0,4],[0,0,3]],["Speedy Net - Kdegz (NCRR)",[0,2,35],[0,36,5]],["Speedy Net - Kdegz (Taguig)",[0,0,1],[0,5,0]],["Speedy Net - Lotus Link (Camarines Norte)",[0,226,182],[0,46,0]],["Speedy Net - Optimum Surf (Cebu)",[0,156,148],[0,16,1]],["Speedy Net - Optimum Surf (NCRR)",[0,63,276],[0,10,0]],["Speedy Net - Optix Internet Installation Services - Bataan",[0,33,247],[0,8,46]],["Speedy Net - Optix Internet Installation Services - Candelaria",[0,3,74],[0,22,5]],["Speedy Net - Optix Internet Installation Services - RW (Aurora)",[0,9,8],[0,0,1]],["Speedy Net - Optix Internet Installation Services - San Jose",[0,8,66],[0,1,1]],["Speedy Net - Optix Internet Installation Services - Sariaya",[0,0,38],[0,0,0]],["Speedy Net - Optix Internet Installation Services - Sorsogon",[0,57,215],[0,32,21]],["Speedy Net - Optix Internet Installation Services - Tanauan",[0,0,65],[0,3,2]],["Speedy Net - Optix Internet Installation Services - Tarlac",[0,6,56],[0,10,10]],["Speedy Net - Partido (CamSur)",[0,44,411],[0,3,26]],["Speedy Net - R&E (Abucay)",[0,49,127],[0,34,0]],["Speedy Net - R&E (Balanga)",[0,0,132],[0,29,29]],["Speedy Net - R&E (Castillejos)",[0,61,198],[0,0,17]],["Speedy Net - R&E (Dinalupihan)",[0,15,79],[0,44,43]],["Speedy Net - R&E (Hermosa)",[0,82,207],[0,32,21]],["Speedy Net - R&E (San Quintin Abra)",[0,25,313],[0,0,18]],["Speedy Net - R&E (Tarlac)",[0,3,70],[0,0,12]],["Speedy Net - R&E (Toguegarao)",[0,13,135],[0,1,4]],["Speedy Net - R&E Babalag (Kalinga)",[0,49,113],[0,31,2]],["Speedy Net - R&E Echague (Isabela)",[0,3,78],[0,2,17]],["Speedy Net - R&E MALLIG (Isabela)",[1,40,107],[0,30,8]],["Speedy Net - R&E San Pablo (Isabela)",[0,89,127],[7,5,28]],["Speedy Net - R&E Santiago (Isabela)",[0,39,196],[1,19,17]],["Speedy Net - R&E Tabuc (Kalinga)",[3,43,49],[0,55,61]],["Speedy Net - R&E Victoria (Tarlac)",[0,45,59],[0,9,26]],["Speedy net - Richwell (Isabela)",[0,115,129],[0,6,1]],["Speedy Net - Tres Niños (Bulacan)",[0,55,149],[0,1,3]],["Speedy Net - Vibelink (Pangasinan)",[0,0,36],[0,0,1]],["Speedy Net Inc.-Zam2surf Zamboanga",[1,72,189],[0,0,1]],["TC5 Batangas",[2,1059,1794],[0,160,49]],["TC5 Cavite",[0,450,675],[0,115,24]],["TC5 Laguna",[2,1028,2026],[0,131,41]],["TC5 Quezon",[0,1,9],[0,2,0]],["TDFES Aklan",[0,37,389],[0,0,45]],["TDFES Albay",[0,83,747],[0,1,149]],["TDFES CamSur+CamNorte+Sorsogon",[0,544,4959],[0,10,584]],["TDFES Capiz",[0,11,54],[0,0,3]],["TDFES Iloilo",[0,29,162],[0,0,26]],["TDFES Masbate",[0,85,667],[0,3,59]],["TDFES Negros Occidental",[0,0,3],[0,0,0]],["TDFES Quezon",[0,11,118],[0,0,17]],["TRI-S Bicol",[0,5,56],[0,2,5]],["Vertex1 Services Inc. - Capiz",[0,27,68],[0,0,0]],["Vertex1 Services Inc. - Tacloban",[0,1,7],[0,1,0]],["WGR Batangas",[1,1296,1749],[0,130,26]],["WGR Bulacan",[0,131,256],[0,14,1]],["WGR Cavite",[0,0,162],[0,0,0]],["WGR Ilocos Norte",[0,16,49],[0,6,0]],["WGR Los Baños",[0,272,915],[3,75,53]],["WGR Naga",[0,57,283],[0,47,48]],["WGR Quezon",[0,196,407],[1,30,15]],["WGR Sta. Maria",[0,153,864],[0,110,65]],["WGR Tayabas",[0,34,140],[0,14,39]],["(No partner on record)",[0,0,0],[0,0,1]]],"noReport":11197};
+  var model=fromSnap(SNAP), live=false, stamp="Snapshot from "+SNAP.asof;
 
-  function peso(n){return "₱"+n.toLocaleString("en-US",{maximumFractionDigits:0})}
-  function pm(n){return "₱"+(n/1e6).toFixed(2)+"M"}
+  function peso(n){return "\u20B1"+n.toLocaleString("en-US",{minimumFractionDigits:(Math.round(n*100)%100===0?0:2),maximumFractionDigits:2})}
+  function pmil(n){return peso(n)} // exact amounts, no rounding to millions
   function num(n){return n.toLocaleString("en-US")}
-  function pct(a,b){return (100*a/b).toFixed(1)+"%"}
+  function pct(a,b){return b?(100*a/b).toFixed(1)+"%":"-"}
+  function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;")}
 
-  // tiles
-  document.getElementById("tiles").innerHTML=
-    tile("Total SLI Fee",pm(totA),num(totC)+" activations")+
-    tile("Billed",pm(T.bilA),pct(T.bilA,totA)+" of total · "+num(T.bilC)+" activations")+
-    tile("Balance",pm(T.balA),pct(T.balA,totA)+" of total · "+num(T.balC)+" activations","balance")+
-    tile("October balance share",pct(rows[9].balA,rows[9].balA+rows[9].bilA),"vs "+pct(rows[8].balA,rows[8].balA+rows[8].bilA)+" in September",null,true);
-  function tile(l,v,n,c,alert){
-    return '<div class="tile '+(c||"")+'"><div class="lbl">'+l+'</div><div class="val">'+v+'</div><div class="note">'+n+'</div></div>';
+  // ---- live data from the sheet (JSONP, so it works from any page that can reach Google)
+  var pending={}, rid=0;
+  window.google=window.google||{};google.visualization=google.visualization||{};google.visualization.Query=google.visualization.Query||{};
+  google.visualization.Query.setResponse=function(r){var f=pending[r.reqId];if(f){delete pending[r.reqId];f(r)}};
+  function query(tq){
+    return new Promise(function(res,rej){
+      var id=String(++rid), s=document.createElement("script");
+      var t=setTimeout(function(){delete pending[id];s.remove();rej(new Error("timeout"))},15000);
+      pending[id]=function(r){clearTimeout(t);s.remove();
+        if(r.status==="ok")res(r.table);else rej(new Error((r.errors&&r.errors[0]&&r.errors[0].detailed_message)||"query error"))};
+      s.onerror=function(){clearTimeout(t);delete pending[id];s.remove();rej(new Error("blocked"))};
+      s.src="https://docs.google.com/spreadsheets/d/"+SHEET+"/gviz/tq?gid="+GID+"&tqx=reqId:"+id+"&tq="+encodeURIComponent(tq);
+      document.head.appendChild(s);
+    });
+  }
+  var busy=false;
+  function sync(){
+    if(busy)return; busy=true;
+    document.getElementById("livetxt").textContent="Syncing with the sheet";
+    Promise.all([
+      query("select A, I, G, count(B) group by A, I, G"),
+      query("select I, J, G, count(B) group by I, J, G"),
+      query("select H, I, G, count(B) group by H, I, G"),
+      query("select K, count(B) where I='BALANCE' group by K")
+    ]).then(function(t){
+      var m=buildModel(t[0],t[1],t[2],t[3]);
+      if(!m.status.length)throw new Error("empty");
+      model=m; live=true; stamp="Synced "+new Date().toLocaleTimeString([], {hour:"numeric",minute:"2-digit",second:"2-digit"});
+      render();
+    }).catch(function(){
+      live=false; stamp="Live sync unavailable here, showing the "+SNAP.asof+" snapshot";
+      setBar();
+    }).then(function(){busy=false});
+  }
+  function setBar(){
+    document.getElementById("dot").className="dot "+(live?"on":"off");
+    document.getElementById("livetxt").textContent=(live?"Live. ":"")+stamp+(live?". Checks the sheet every minute.":"");
   }
 
+  // ---- charts
   var tip=document.getElementById("tip");
-  function showTip(e,html){
-    tip.innerHTML=html;tip.style.opacity=1;
-    var x=e.clientX+14,y=e.clientY+14;
-    if(x+250>innerWidth)x=e.clientX-254;
-    tip.style.left=x+"px";tip.style.top=y+"px";
-  }
+  function showTip(e,html){tip.innerHTML=html;tip.style.opacity=1;var x=e.clientX+14,y=e.clientY+14;if(x+250>innerWidth)x=e.clientX-254;tip.style.left=x+"px";tip.style.top=y+"px"}
   function hideTip(){tip.style.opacity=0}
-
-  // stacked bar chart builder
-  function stacked(svgId,labels,bil,bal,fmtAxis,fmtTip,nice){
-    var W=760,H=svgId==="daily"?240:300,L=48,R=8,Tp=10,B=26;
-    var max=0;bil.forEach(function(v,i){max=Math.max(max,v+bal[i])});
-    var step=nice(max), top=Math.ceil(max/step)*step;
-    var ih=H-Tp-B, iw=W-L-R, n=labels.length, bw=iw/n, bar=Math.min(bw*0.62,44);
-    var s="";
-    for(var t=0;t<=top+1e-9;t+=step){
-      var y=Tp+ih-(t/top)*ih;
-      s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y+'" y2="'+y+'" stroke="var(--grid)"/>';
-      s+='<text x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end">'+fmtAxis(t)+'</text>';
-    }
+  function niceStep(max){var raw=max/5,p=Math.pow(10,Math.floor(Math.log10(raw||1))),f=raw/p;return (f<=1?1:f<=2?2:f<=5?5:10)*p}
+  function stacked(svgId,labels,bil,bal,fmtAxis,fmtTip){
+    var W=760,H=300,L=48,R=8,Tp=10,B=26,max=0;
+    bil.forEach(function(v,i){max=Math.max(max,v+bal[i])});
+    var step=niceStep(max||1),top=Math.ceil((max||1)/step)*step;
+    var ih=H-Tp-B,iw=W-L-R,n=Math.max(labels.length,1),bw=iw/n,bar=Math.min(bw*0.62,44),s="";
+    for(var t=0;t<=top+1e-9;t+=step){var y=Tp+ih-(t/top)*ih;
+      s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y+'" y2="'+y+'" stroke="var(--grid)"/><text x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end">'+fmtAxis(t)+'</text>'}
     labels.forEach(function(lb,i){
-      var cx=L+bw*i+bw/2, x=cx-bar/2;
-      var hb=(bil[i]/top)*ih, hl=(bal[i]/top)*ih, yb=Tp+ih-hb, yl=yb-hl-(hb>0&&hl>0?2:0);
-      if(hb>0)s+='<rect class="bar" x="'+x+'" y="'+yb+'" width="'+bar+'" height="'+hb+'" fill="var(--billed)" data-i="'+i+'"/>';
-      if(hl>0)s+='<rect class="bar" x="'+x+'" y="'+yl+'" width="'+bar+'" height="'+hl+'" rx="2" fill="var(--balance)" data-i="'+i+'"/>';
-      if(n<=12||i%3===0||i===n-1)s+='<text x="'+cx+'" y="'+(H-8)+'" text-anchor="middle">'+lb+'</text>';
+      var cx=L+bw*i+bw/2,x=cx-bar/2,hb=(bil[i]/top)*ih,hl=(bal[i]/top)*ih,yb=Tp+ih-hb,yl=yb-hl-(hb>0&&hl>0?2:0);
+      if(hb>0)s+='<rect class="bar" x="'+x+'" y="'+yb+'" width="'+bar+'" height="'+hb+'" fill="var(--billed)"/>';
+      if(hl>0)s+='<rect class="bar" x="'+x+'" y="'+yl+'" width="'+bar+'" height="'+hl+'" rx="2" fill="var(--balance)"/>';
+      s+='<text x="'+cx+'" y="'+(H-8)+'" text-anchor="middle">'+esc(lb)+'</text>';
       s+='<rect x="'+(cx-bw/2)+'" y="'+Tp+'" width="'+bw+'" height="'+ih+'" fill="transparent" data-i="'+i+'" class="hit"/>';
     });
     var el=document.getElementById(svgId);el.innerHTML=s;
     el.querySelectorAll(".hit").forEach(function(h){
       h.addEventListener("mousemove",function(e){showTip(e,fmtTip(+h.getAttribute("data-i")))});
-      h.addEventListener("mouseleave",hideTip);
-    });
+      h.addEventListener("mouseleave",hideTip)});
   }
 
-  var mode="amt";
+  var mode="amt", rows=[], T={};
   function drawMonthly(){
-    var amt=mode==="amt";
+    var a=mode==="amt";
     stacked("monthly",rows.map(function(r){return r.m}),
-      rows.map(function(r){return amt?r.bilA/1e6:r.bilC}),
-      rows.map(function(r){return amt?r.balA/1e6:r.balC}),
-      function(v){return amt?v+"M":num(v)},
-      function(i){var r=rows[i],tot=amt?r.bilA+r.balA:r.bilC+r.balC;
-        return "<b>"+r.m+" 2026</b><br>Billed: "+(amt?pm(r.bilA):num(r.bilC))+"<br>Balance: "+(amt?pm(r.balA):num(r.balC))+"<br>Balance share: "+pct(amt?r.balA:r.balC,tot)},
-      function(max){var raw=max/5,p=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/p;return (f<=1?1:f<=2?2:f<=5?5:10)*p});
+      rows.map(function(r){return a?r.bilA/1e6:r.bilC}),rows.map(function(r){return a?r.balA/1e6:r.balC}),
+      function(v){return a?v+"M":num(v)},
+      function(i){var r=rows[i];return "<b>"+esc(r.m)+"</b><br>Billed: "+(a?pmil(r.bilA):num(r.bilC))+"<br>Balance: "+(a?pmil(r.balA):num(r.balC))+"<br>Closing rate: "+pct(r.bilC,r.bilC+r.balC)});
   }
-  drawMonthly();
-  function setMode(m){mode=m;
-    document.getElementById("v-amt").setAttribute("aria-pressed",m==="amt");
-    document.getElementById("v-cnt").setAttribute("aria-pressed",m==="cnt");drawMonthly()}
+  function setMode(m){mode=m;document.getElementById("v-amt").setAttribute("aria-pressed",m==="amt");document.getElementById("v-cnt").setAttribute("aria-pressed",m==="cnt");drawMonthly()}
   document.getElementById("v-amt").onclick=function(){setMode("amt")};
   document.getElementById("v-cnt").onclick=function(){setMode("cnt")};
+  document.getElementById("refresh").onclick=function(){sync()};
 
-  // table
-  var th='<tr><th>Month</th><th>Billed</th><th>Balance</th><th>Total</th><th>Balance %</th></tr>';
-  var tb=rows.map(function(r){return "<tr><td>"+r.m+"</td><td>"+peso(r.bilA)+"</td><td>"+peso(r.balA)+"</td><td>"+peso(r.bilA+r.balA)+"</td><td>"+pct(r.balA,r.bilA+r.balA)+"</td></tr>"}).join("");
-  tb+='<tr><td>No date</td><td>'+peso(0)+'</td><td>'+peso(NODATE.balA)+'</td><td>'+peso(NODATE.balA)+'</td><td>100.0%</td></tr>';
-  tb+='<tr><td><b>All</b></td><td>'+peso(T.bilA)+'</td><td>'+peso(T.balA)+'</td><td>'+peso(totA)+'</td><td>'+pct(T.balA,totA)+'</td></tr>';
-  document.getElementById("mtable").innerHTML=th+tb;
-
-  // balance by status (amount = SLI fee)
-  var ST=[["Pending",7541143,11198],["Compliance",2999081.5,4391],["Closed",15400,22]];
-  var smax=ST[0][1];
-  document.getElementById("status").innerHTML=ST.map(function(s){
-    return '<div class="row"><div class="name">'+s[0]+'</div><div class="track"><div class="fill" style="width:'+Math.max(1.5,100*s[1]/smax)+'%"></div></div><div class="n">'+pm(s[1])+'<span class="sm">'+num(s[2])+' rows</span></div></div>'}).join("");
-  document.getElementById("noreport").innerHTML="<b>11,197 of the 15,611</b> balance rows are tagged <b>NO REPORT</b>. They have not been billed because no installation report was received.";
-
-  // partners panel is filled from the full partner record below
-
-
-
-  // per-partner record: [name, billed counts by fee, balance counts by fee]; fees 360.5 / 650 / 700
-  var FEES=[360.5,650,700];
-  var PD=[["0208 Trading",[4,394,910],[1,44,88]],["104PCL Internet and Cable Installation Services - Bicol",[0,47,42],[0,11,0]],["104PCL Internet and Cable Installation Services - Bulacan",[0,33,52],[0,7,7]],["104PCL Internet and Cable Installation Services - Leyte",[1,136,130],[0,20,8]],["104PCL Internet and Cable Installation Services - NCR",[0,80,174],[0,14,9]],["3TKVS Enterprise",[0,37,171],[0,19,27]],["A&R CCTV AND COMPUTER INSTALLATION SERVICES - Cam Norte",[0,112,466],[0,126,18]],["A&R CCTV AND COMPUTER INSTALLATION SERVICES - Cam Sur",[0,24,176],[0,6,15]],["A. Narvaes Albay+Masbate",[0,291,253],[0,112,87]],["A. Narvaes Bulacan",[0,0,4],[0,0,0]],["A. Narvaes Sorsogon+Camsur",[0,406,252],[0,89,46]],["A2A INTERNET INSTALLATION SERVICES",[0,42,84],[0,29,3]],["AAMIT Batangas",[0,83,411],[0,17,27]],["AAMIT Oriental Mindoro",[0,84,277],[0,46,41]],["Accel Cyber Link Bataan",[0,74,162],[0,32,8]],["Adria Telecom Cavite",[0,38,161],[0,4,6]],["Adria Telecom NCR",[0,15,117],[0,0,2]],["AJ TRADING",[0,197,236],[3,169,36]],["AQZ Internet Installation Services",[0,0,0],[0,0,6]],["BBEE Aurora",[0,0,57],[0,0,11]],["BBEE Nueva Ecija",[0,516,534],[0,180,88]],["BBEE Zamboanga Del Sur",[0,0,0],[0,45,14]],["Bignay IIS Laguna",[0,4,155],[0,22,49]],["BMS Nueva Ecija",[0,0,12],[0,1,1]],["Bryth Electronic and Telecommunication Parts and Equipment Retailing Batangas",[0,19,82],[0,1,12]],["Bryth Electronic and Telecommunication Parts and Equipment Retailing Cam Sur & Albay",[0,225,2825],[0,34,852]],["Bryth Electronic and Telecommunication Parts and Equipment Retailing Sorsogon & Masbate",[0,243,771],[0,100,176]],["CBL Fiber Internet and Installation Services",[0,0,0],[0,0,24]],["Charity Faye Satellite Services",[0,42,34],[0,12,0]],["Crown Deluxe Baguio",[0,0,12],[0,0,0]],["DBS Abra",[0,0,6],[0,0,0]],["DBS Apayao",[0,3,65],[0,3,11]],["DBS Aurora",[0,0,105],[0,0,2]],["DBS Bulacan",[0,100,11],[0,3,0]],["DBS Cagayan",[0,283,1232],[0,115,137]],["DBS Ilocos Norte",[0,180,1158],[0,79,89]],["DBS Ilocos Sur",[0,123,313],[1,2,9]],["DBS Isabela+Nueva Vizcaya",[0,466,2872],[0,114,253]],["DBS Kalinga",[0,27,324],[0,15,53]],["DBS Nueva Ecija",[0,388,2359],[0,50,30]],["DBS Pangasinan+Zambales",[0,212,1741],[0,75,95]],["DBS Quirino",[0,0,36],[0,0,0]],["DBS Tarlac",[0,15,0],[0,2,0]],["DDM Skyline Batangas",[0,0,58],[0,46,164]],["DDM Skyline Cavite",[0,0,152],[0,5,21]],["DDM Skyline Negros",[0,22,183],[0,22,23]],["DIS Aurora",[0,8,80],[0,17,22]],["DIS Tarlac",[0,37,205],[0,19,54]],["Doi Network And Data Solutions - Bukidnon",[0,97,233],[0,39,54]],["Doi Network And Data Solutions - CDO",[0,0,24],[0,0,0]],["Doi Network And Data Solutions - Cebu",[0,26,77],[0,15,21]],["Doi Network And Data Solutions - Leyte",[0,48,9],[0,55,9]],["Doi Network And Data Solutions - Zamboanga",[0,9,69],[0,4,28]],["El Bimbo Batangas",[0,133,106],[0,32,1]],["EMC2 CONNECT & SERVICES",[0,0,0],[0,2,35]],["F. ALCANTARA VARIETY STORE Albay",[0,35,105],[0,19,21]],["F. ALCANTARA VARIETY STORE Isabela",[0,27,387],[0,15,36]],["F. ALCANTARA VARIETY STORE Nueva Ecija",[0,87,533],[0,20,91]],["Four SRD",[0,0,33],[0,0,1]],["Golden Mountain Laguna",[0,185,183],[0,28,6]],["GR Atienza",[0,11,111],[0,2,15]],["HRJED Construction Services",[0,4,10],[0,22,16]],["Iconnect Fiber Wired Internet Services",[0,10,67],[0,7,13]],["Internal Team NCRR",[0,0,1],[5,23,114]],["Interpole Internet Installation Services",[0,36,509],[0,5,67]],["iSolve Business Technologies, Inc.",[0,203,125],[0,61,11]],["J Marcus Aurora",[0,16,122],[0,8,7]],["J Marcus Batangas",[0,18,60],[0,1,5]],["J Marcus Bulacan",[0,0,88],[0,0,2]],["J Marcus Cagayan",[0,13,116],[0,4,16]],["J Marcus Cavite",[0,37,50],[0,11,19]],["J Marcus Davao",[0,0,61],[0,0,22]],["J Marcus Ifugao",[0,53,340],[0,28,29]],["J Marcus Ilocos Norte",[0,29,203],[0,15,11]],["J Marcus Ilocos Sur",[0,64,636],[0,37,99]],["J Marcus Isabela",[0,58,441],[0,19,13]],["J Marcus La Union",[0,57,462],[0,11,17]],["J Marcus Leyte",[0,12,146],[0,8,26]],["J Marcus Nueva Ecija",[0,55,232],[0,59,17]],["J Marcus Nueva Vizcaya",[0,92,985],[0,26,50]],["J Marcus Oriental Mindoro",[0,24,190],[0,0,12]],["J Marcus Palawan",[0,5,180],[0,1,41]],["J Marcus Pampanga",[0,0,15],[0,0,0]],["J Marcus Pangasinan",[0,11,177],[0,1,17]],["J Marcus South Cotabato",[0,0,26],[1,0,16]],["J Marcus Tarlac",[0,13,123],[0,3,12]],["J Marcus Zambales",[0,77,604],[0,22,25]],["J Marcus Zamboanga Del Sur",[0,28,127],[0,10,22]],["J.E.D Store",[0,20,104],[0,14,18]],["Jaincto Masbate",[0,0,0],[0,22,95]],["JC Tech's Prepaid Fiber NCR",[0,0,84],[0,0,0]],["KCRR Enterprise Cam Sur+Quezon",[0,68,235],[0,65,98]],["KCRR Enterprise Cavite",[0,0,2],[0,0,2]],["KCRR Enterprise NCRR",[0,0,48],[0,1,19]],["KFB Batangas",[0,214,1274],[0,77,54]],["KFB Laguna",[0,91,346],[0,27,22]],["KFB NCRR",[0,0,1],[0,0,1]],["KFB Oriental Mindoro",[0,96,418],[0,99,73]],["KIMs Aurora",[0,0,6],[0,0,5]],["KIMs Bataan",[0,0,161],[0,0,1]],["KIMs Cagayan",[0,54,679],[0,11,264]],["KIMs Pampanga",[0,9,181],[0,2,30]],["KIMs Tarlac",[0,19,310],[0,5,32]],["KIMs Zambales",[0,27,166],[0,4,24]],["Kubera Nueva Ecija",[0,71,219],[11,120,68]],["LK102 - LK INFINITY",[0,155,33],[0,30,0]],["LK102 - LK102 QC PROJECT 7",[0,0,11],[0,0,2]],["LK102 - LKB&B Caloocan",[0,135,101],[0,35,6]],["LK102 - LKGV Binangonan",[0,0,331],[0,0,12]],["LK102 - LKTAH Antipolo",[0,0,24],[0,0,0]],["LK102 - PxLKAA Malate 1",[0,13,16],[0,32,13]],["LK102 - PxLKCZ_Antipolo1",[0,1,8],[0,0,2]],["LK102 - PxLKVE Rodriguez 1",[0,0,1],[0,1,0]],["LK102 - Taguig 1",[0,72,214],[0,51,10]],["M4KE Internet Installation Services NCR",[0,0,0],[0,0,0]],["Maestro Enterprise",[0,63,109],[0,19,6]],["MATT21 - Isabela",[0,6,17],[0,6,2]],["MATT21 - NCRR",[0,1612,4439],[1,516,323]],["MBE Starlink Daet",[0,96,279],[0,36,27]],["Moonstar Nine -9 Marketing Campaign Services - Ilocos Norte",[2,543,439],[2,87,18]],["NOAH IT Services Batangas",[4,148,128],[0,37,6]],["Otso Fiberr Internet and Cable Installation Services",[0,0,43],[0,130,28]],["Ourtech - Bicol",[0,0,9],[0,0,0]],["Ourtech - Surigao",[0,46,86],[0,1,0]],["Ourtech Benguet",[0,55,214],[0,10,0]],["Ourtech Cagayan",[1,64,50],[0,9,0]],["Ourtech Cavite",[0,1,50],[0,0,0]],["Ourtech Davao",[2,16,135],[1,1,0]],["Ourtech Ilocos Norte",[0,10,5],[0,0,0]],["Ourtech Isabela",[0,0,8],[0,0,0]],["Ourtech La Union",[0,6,29],[0,0,0]],["Ourtech Occidental Mindoro",[1,51,92],[0,6,1]],["Ourtech Palawan",[0,147,65],[0,16,3]],["Ourtech Pangasinan",[0,467,718],[0,27,1]],["Ourtech Tarlac",[0,52,37],[0,4,0]],["P. Tanzo CamSur+CamNorte",[0,24,192],[3,127,225]],["P. Tanzo Sorsogon+Albay",[0,18,368],[0,22,158]],["Panlock Corporation",[0,194,75],[0,5,3]],["Pits Telecom Cavite",[0,136,765],[0,9,9]],["PxRHK Alicia 1",[0,0,10],[0,0,12]],["PxRHK Alicia Isabela",[0,0,0],[0,8,1]],["PxRHK Bataan 1",[0,2,20],[0,1,1]],["PxRHK Batangas 1",[0,19,101],[0,6,3]],["PxRHK Batangas 3",[2,65,87],[0,2,2]],["PxRHK Bayambang 1",[0,14,55],[0,10,6]],["PxRHK Bulacan 1",[0,39,44],[0,0,0]],["PxRHK Bulacan 2",[0,230,339],[0,9,2]],["PxRHK Bulacan 3",[0,751,351],[0,41,1]],["PxRHK Bulacan 5",[0,134,13],[0,2,2]],["PxRHK Bulacan 6",[0,0,3],[0,6,0]],["PxRHK Calasiao 1",[0,520,316],[0,41,10]],["PxRHK Daet 1",[0,20,59],[1,6,3]],["PxRHK Dagupan",[0,3,31],[2,14,6]],["PxRHK Dasma Cavite",[0,15,33],[0,0,0]],["PxRHK Ilocos Norte 1",[0,23,41],[0,5,28]],["PxRHK Ilocos Sur 1",[0,0,6],[1,84,26]],["PxRHK Isabela 1",[0,0,2],[0,0,0]],["PxRHK Lumban 1",[0,0,0],[0,11,5]],["PxRHK Nagcarlan 1",[0,16,50],[0,27,20]],["PxRHK Oriental Mindoro 1",[0,13,127],[0,11,49]],["PxRHK Pagudpud",[0,25,28],[0,10,4]],["PxRHK Pampanga 1",[0,0,9],[0,17,10]],["PxRHK Sorsogon 1",[0,63,131],[0,0,0]],["PxRHK Sorsogon 2",[0,62,141],[0,6,0]],["PxRHK Tarlac 2",[0,46,74],[0,3,3]],["R.E.A. INTERNET AND CABLE INSTALLATION SERVICES",[0,74,417],[0,60,11]],["R.E.G. INTERNET INSTALLATION SERVICES",[0,112,90],[0,36,16]],["REIGARTKGR INTERNET&CABLE INSTALLATION SERVICES",[0,17,113],[0,1,5]],["Reynon Internet Installation Services",[0,11,38],[0,24,4]],["RHK Albay",[0,196,345],[0,3,3]],["RHK Albay 2",[0,130,330],[0,10,3]],["RHK Apayao",[0,410,343],[0,19,0]],["RHK Aurora",[0,204,114],[0,12,0]],["RHK Bacolod 1",[0,7,65],[0,10,9]],["RHK Balanga",[0,97,386],[0,2,0]],["RHK Balanga 2",[0,378,3],[0,31,0]],["RHK Bayawan",[0,101,609],[0,17,18]],["RHK Bulacan 1 MDela Cruz",[0,264,318],[0,1,0]],["RHK Bulacan 4",[0,28,14],[0,0,2]],["RHK Calauag Quezon",[1,72,107],[0,14,6]],["RHK Camsur",[0,1,60],[0,0,0]],["RHK Camsur2",[0,9,106],[0,0,0]],["RHK Camsur3",[0,88,220],[0,11,0]],["RHK Camsur4",[0,99,204],[0,9,4]],["RHK Catanauan Quezon",[0,124,25],[0,3,3]],["RHK Daet 2",[0,13,28],[0,7,9]],["RHK GenSan",[0,0,49],[0,0,44]],["RHK Ilocos Norte 1",[0,86,54],[0,11,1]],["RHK Iriga 1",[1,162,105],[0,13,8]],["RHK Isabela",[0,2,0],[0,0,0]],["RHK Lopez Quezon 1",[0,0,9],[0,0,0]],["RHK Lucena 2 Quezon-Macabuhay",[0,3,1],[0,7,1]],["RHK Lucena Quezon 1",[0,32,77],[0,32,6]],["RHK Meycauayan",[0,10,51],[0,3,4]],["RHK MILAOR Camsur",[0,4,15],[0,0,0]],["RHK Mulanay Quezon",[3,98,159],[0,18,1]],["RHK Negros Occidental",[0,1,16],[0,0,0]],["RHK Nueva Ecija",[0,0,12],[0,0,3]],["RHK Nueva Vizcaya 1",[0,32,34],[0,4,0]],["RHK Nueva Vizcaya 2 (Solano1)",[0,4,17],[0,1,0]],["RHK Pagbilao Quezon",[0,68,96],[0,59,2]],["RHK Pampanga 2",[0,0,8],[0,0,1]],["RHK Pampanga 3",[0,1,15],[0,0,3]],["RHK Pangasinan",[0,92,71],[0,18,15]],["RHK Polangui 1 (Albay)",[0,5,22],[6,16,17]],["RHK Quezon",[0,81,409],[0,0,4]],["RHK Quirino 1",[0,0,3],[0,14,7]],["RHK Sariaya Quezon 1",[0,0,2],[0,0,0]],["RHK Sorsogon1",[0,123,304],[0,12,1]],["RHK Sorsogon2",[0,38,118],[0,4,0]],["RHK Sorsogon3",[0,76,240],[0,12,0]],["RHK Sorsogon4 (Bulan1)",[0,65,55],[0,2,0]],["RHK Tarlac 1",[0,0,15],[0,0,0]],["RHK Tarlac 3",[0,5,1],[0,0,0]],["RHK Zambales",[0,9,32],[0,2,0]],["RHP Pangasinan",[0,0,3],[0,2,20]],["RNB Enterprises NCR",[0,111,547],[0,61,41]],["Romeo Online Store - Cavite",[0,50,301],[0,116,156]],["S2S Sancaman Telephone Base Informations Bohol",[0,6,27],[0,4,11]],["S2S Sancaman Telephone Base Informations Olongapo",[0,23,239],[0,81,170]],["S2S Sancaman Telephone Base Informations Tarlac",[0,38,227],[0,8,195]],["SER EDZ Cable Television Installation Services",[0,2,42],[0,142,49]],["SIRRES.TECH INTERNET INSTALLATION SERVICES",[0,94,633],[0,2,28]],["SJEJ Enterprise Laguna",[0,0,70],[0,0,54]],["SL & AJ Son's - CAVITE",[0,83,142],[0,4,2]],["SOUTH KONEK",[0,54,109],[0,6,0]],["SpeedSync88 Bataan",[0,0,8],[0,0,0]],["SpeedSync88 Pampanga",[0,15,172],[0,3,43]],["SpeedSync88 Zambales",[0,45,283],[0,23,78]],["Speedy Net - 5C NOGOT (Caloocan)",[0,32,32],[0,1,5]],["Speedy Net - 5C NOGOT (Cam Norte)",[0,23,111],[0,2,4]],["Speedy Net - AE Fabrixervices (CamSur)",[0,0,0],[0,0,36]],["Speedy Net - AYOS (Cavite)",[0,530,813],[0,44,32]],["Speedy Net - Belfast (Cavite)",[0,202,463],[0,13,1]],["Speedy Net - Digital Solution (Capiz)",[0,0,6],[0,0,23]],["Speedy Net - E-Surge (Camsur)",[1,223,269],[0,45,2]],["Speedy Net - Evn It (Mindoro)",[0,0,0],[0,0,11]],["Speedy Net - Fax (Bulacan)",[0,66,114],[0,3,8]],["Speedy Net - GZO Information Tech (Quezon)",[0,31,164],[0,1,10]],["Speedy Net - H&V (Pili)",[3,209,156],[2,67,0]],["Speedy Net - H&V Bacon (Sorsogon)",[3,146,103],[1,3,1]],["Speedy Net - H&V Draga (Albay)",[2,393,163],[0,2,0]],["Speedy Net - Interpole (Barangka)",[0,168,125],[0,40,1]],["Speedy Net - Interpole (Bataan)",[0,127,305],[0,85,36]],["Speedy Net - Interpole (Batasan)",[0,75,489],[0,3,42]],["Speedy Net - Interpole (Cebu)",[0,0,14],[0,0,0]],["Speedy Net - Interpole (Gen. Luna)",[0,101,959],[0,4,45]],["Speedy Net - Interpole (Hy-Tech Palawan)",[21,121,37],[14,1,0]],["Speedy Net - Interpole (Ikonnect Cebu)",[0,0,0],[0,0,2]],["Speedy Net - Interpole (Ilocos Sur)",[0,248,409],[0,4,42]],["Speedy Net - Interpole (J3Spark)",[0,1,52],[0,5,1]],["Speedy Net - Interpole (Lezevach QC)",[0,0,0],[1,37,7]],["Speedy Net - Interpole (Morong Rizal)",[0,50,502],[0,5,12]],["Speedy Net - J&J IIS (Camarines Sur)",[0,0,42],[0,0,6]],["Speedy Net - JAG (Tarlac)",[0,54,92],[0,13,5]],["Speedy Net - Joerider (NCRR)",[0,0,52],[0,0,3]],["Speedy Net - Kdegz (CamSur)",[0,0,4],[0,0,3]],["Speedy Net - Kdegz (NCRR)",[0,2,35],[0,36,5]],["Speedy Net - Kdegz (Taguig)",[0,0,1],[0,5,0]],["Speedy Net - Lotus Link (Camarines Norte)",[0,226,182],[0,46,0]],["Speedy Net - Optimum Surf (Cebu)",[0,156,148],[0,16,1]],["Speedy Net - Optimum Surf (NCRR)",[0,63,276],[0,10,0]],["Speedy Net - Optix Internet Installation Services - Bataan",[0,33,247],[0,8,46]],["Speedy Net - Optix Internet Installation Services - Candelaria",[0,3,74],[0,22,5]],["Speedy Net - Optix Internet Installation Services - RW (Aurora)",[0,9,8],[0,0,1]],["Speedy Net - Optix Internet Installation Services - San Jose",[0,8,66],[0,1,1]],["Speedy Net - Optix Internet Installation Services - Sariaya",[0,0,38],[0,0,0]],["Speedy Net - Optix Internet Installation Services - Sorsogon",[0,57,215],[0,32,21]],["Speedy Net - Optix Internet Installation Services - Tanauan",[0,0,65],[0,3,2]],["Speedy Net - Optix Internet Installation Services - Tarlac",[0,6,56],[0,10,10]],["Speedy Net - Partido (CamSur)",[0,44,411],[0,3,26]],["Speedy Net - R&E (Abucay)",[0,49,127],[0,34,0]],["Speedy Net - R&E (Balanga)",[0,0,132],[0,29,29]],["Speedy Net - R&E (Castillejos)",[0,61,198],[0,0,17]],["Speedy Net - R&E (Dinalupihan)",[0,15,79],[0,44,43]],["Speedy Net - R&E (Hermosa)",[0,82,207],[0,32,21]],["Speedy Net - R&E (San Quintin Abra)",[0,25,313],[0,0,18]],["Speedy Net - R&E (Tarlac)",[0,3,70],[0,0,12]],["Speedy Net - R&E (Toguegarao)",[0,13,135],[0,1,4]],["Speedy Net - R&E Babalag (Kalinga)",[0,49,113],[0,31,2]],["Speedy Net - R&E Echague (Isabela)",[0,3,78],[0,2,17]],["Speedy Net - R&E MALLIG (Isabela)",[1,40,107],[0,30,8]],["Speedy Net - R&E San Pablo (Isabela)",[0,89,127],[7,5,28]],["Speedy Net - R&E Santiago (Isabela)",[0,39,196],[1,19,17]],["Speedy Net - R&E Tabuc (Kalinga)",[3,43,49],[0,55,61]],["Speedy Net - R&E Victoria (Tarlac)",[0,45,59],[0,9,26]],["Speedy net - Richwell (Isabela)",[0,115,129],[0,6,1]],["Speedy Net - Tres Niños (Bulacan)",[0,55,149],[0,1,3]],["Speedy Net - Vibelink (Pangasinan)",[0,0,36],[0,0,1]],["Speedy Net Inc.-Zam2surf Zamboanga",[1,72,189],[0,0,1]],["TC5 Batangas",[2,1059,1794],[0,160,49]],["TC5 Cavite",[0,450,675],[0,115,24]],["TC5 Laguna",[2,1028,2026],[0,131,41]],["TC5 Quezon",[0,1,9],[0,2,0]],["TDFES Aklan",[0,37,389],[0,0,45]],["TDFES Albay",[0,83,747],[0,1,149]],["TDFES CamSur+CamNorte+Sorsogon",[0,544,4959],[0,10,584]],["TDFES Capiz",[0,11,54],[0,0,3]],["TDFES Iloilo",[0,29,162],[0,0,26]],["TDFES Masbate",[0,85,667],[0,3,59]],["TDFES Negros Occidental",[0,0,3],[0,0,0]],["TDFES Quezon",[0,11,118],[0,0,17]],["TRI-S Bicol",[0,5,56],[0,2,5]],["Vertex1 Services Inc. - Capiz",[0,27,68],[0,0,0]],["Vertex1 Services Inc. - Tacloban",[0,1,7],[0,1,0]],["WGR Batangas",[1,1296,1749],[0,130,26]],["WGR Bulacan",[0,131,256],[0,14,1]],["WGR Cavite",[0,0,162],[0,0,0]],["WGR Ilocos Norte",[0,16,49],[0,6,0]],["WGR Los Baños",[0,272,915],[3,75,53]],["WGR Naga",[0,57,283],[0,47,48]],["WGR Quezon",[0,196,407],[1,30,15]],["WGR Sta. Maria",[0,153,864],[0,110,65]],["WGR Tayabas",[0,34,140],[0,14,39]],["(No partner on record)",[0,0,0],[0,0,1]]];
-  var recs=PD.map(function(p){
-    var bc=p[1][0]+p[1][1]+p[1][2], lc=p[2][0]+p[2][1]+p[2][2];
-    var ba=p[1][0]*FEES[0]+p[1][1]*FEES[1]+p[1][2]*FEES[2];
-    var la=p[2][0]*FEES[0]+p[2][1]*FEES[1]+p[2][2]*FEES[2];
-    return {name:p[0],bc:bc,lc:lc,n:bc+lc,ba:ba,la:la,ta:ba+la,pct:(ba+la)?ba/(ba+la):0};
-  });
-  function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;")}
-  var top=recs.slice().sort(function(a,b){return b.la-a.la}).slice(0,10), tmax=top[0].la;
-  document.getElementById("partners").innerHTML=top.map(function(p){
-    return '<div class="row"><div class="name" title="'+esc(p.name)+'">'+esc(p.name)+'</div><div class="track"><div class="fill" style="width:'+(100*p.la/tmax)+'%"></div></div><div class="n">'+pm(p.la)+'<span class="sm">'+num(p.lc)+' rows</span></div></div>'}).join("");
-
-  var COLS=[["name","Partner"],["n","Activations"],["ba","Billed"],["la","Balance"],["ta","Total"],["pct","Billed %"]];
-  var sortKey="ta", sortDir=-1, query="";
-  var ptable=document.getElementById("ptable");
+  // ---- partner table state
+  var COLS=[["name","Partner"],["n","Activations"],["ba","Billed"],["la","Balance"],["ta","Total"],["rate","Closing rate"]];
+  var sortKey="ta",sortDir=-1,query_="",recs=[];
   function drawP(){
-    var q=query.trim().toLowerCase();
+    var ptable=document.getElementById("ptable"),q=query_.trim().toLowerCase();
     var list=recs.filter(function(r){return !q||r.name.toLowerCase().indexOf(q)>-1});
-    list.sort(function(a,b){
-      var x=a[sortKey],y=b[sortKey];
-      if(sortKey==="name"){return sortDir*x.toLowerCase().localeCompare(y.toLowerCase())}
-      return sortDir*(x-y)||a.name.localeCompare(b.name);
-    });
-    var T={n:0,ba:0,la:0,ta:0};
-    list.forEach(function(r){T.n+=r.n;T.ba+=r.ba;T.la+=r.la;T.ta+=r.ta});
-    var head="<thead><tr>"+COLS.map(function(c){
-      var on=c[0]===sortKey, arrow=on?(sortDir<0?" \u25BE":" \u25B4"):"";
+    list.sort(function(a,b){var x=a[sortKey],y=b[sortKey];
+      if(sortKey==="name")return sortDir*x.toLowerCase().localeCompare(y.toLowerCase());
+      return sortDir*(x-y)||a.name.localeCompare(b.name)});
+    var S={n:0,bc:0,ba:0,la:0,ta:0};
+    list.forEach(function(r){S.n+=r.n;S.bc+=r.bc;S.ba+=r.ba;S.la+=r.la;S.ta+=r.ta});
+    var head="<thead><tr>"+COLS.map(function(c){var on=c[0]===sortKey,arrow=on?(sortDir<0?" \u25BE":" \u25B4"):"";
       return '<th tabindex="0" data-k="'+c[0]+'"'+(on?' aria-sort="'+(sortDir<0?"descending":"ascending")+'"':"")+'>'+c[1]+arrow+'</th>'}).join("")+"</tr></thead>";
-    var body="<tbody><tr class='tot'><td>"+(q?"Matching partners":"All partners")+" ("+num(list.length)+")</td><td>"+num(T.n)+"</td><td>"+peso(T.ba)+"</td><td>"+peso(T.la)+"</td><td>"+peso(T.ta)+"</td><td>"+(T.ta?pct(T.ba,T.ta):"-")+"</td></tr>"+
-      list.map(function(r){
-        var p=Math.round(r.pct*100);
-        return "<tr><td>"+esc(r.name)+"</td><td>"+num(r.n)+"</td><td>"+peso(r.ba)+"</td><td>"+peso(r.la)+"</td><td>"+peso(r.ta)+"</td><td"+(p<50?' class="lowbill"':"")+">"+(r.pct*100).toFixed(1)+"%<span class='bar2'><i style='width:"+p+"%'></i></span></td></tr>"}).join("")+"</tbody>";
+    var body="<tbody><tr class='tot'><td>"+(q?"Matching partners":"All partners")+" ("+num(list.length)+")</td><td>"+num(S.n)+"</td><td>"+peso(S.ba)+"</td><td>"+peso(S.la)+"</td><td>"+peso(S.ta)+"</td><td>"+pct(S.bc,S.n)+"</td></tr>"+
+      list.map(function(r){var p=Math.round(r.rate*100);
+        return "<tr><td>"+esc(r.name)+"</td><td>"+num(r.n)+"</td><td>"+peso(r.ba)+"</td><td>"+peso(r.la)+"</td><td>"+peso(r.ta)+"</td><td"+(p<50?' class="lowbill"':"")+">"+(r.rate*100).toFixed(1)+"%<span class='bar2'><i style='width:"+p+"%'></i></span></td></tr>"}).join("")+"</tbody>";
     ptable.innerHTML=head+body;
-    document.getElementById("pcount").textContent=num(recs.length)+" partners. Click a column to sort. Billed % under 50 shows in orange.";
+    document.getElementById("pcount").textContent=num(recs.length)+" partners. Click a column to sort. A closing rate under 50% shows in orange.";
     ptable.querySelectorAll("th").forEach(function(th){
       function go(){var k=th.getAttribute("data-k");if(k===sortKey){sortDir=-sortDir}else{sortKey=k;sortDir=(k==="name")?1:-1}drawP()}
       th.addEventListener("click",go);
-      th.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}});
-    });
+      th.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}})});
   }
-  document.getElementById("psearch").addEventListener("input",function(e){query=e.target.value;drawP()});
-  drawP();
+  document.getElementById("psearch").addEventListener("input",function(e){query_=e.target.value;drawP()});
+
+  // ---- render everything from the current model
+  function render(){
+    var M=model;
+    rows=M.months.map(function(m){return{m:m.label,balA:amt(m.bal),bilA:amt(m.bil),balC:cnt(m.bal),bilC:cnt(m.bil)}});
+    T={bilA:0,bilC:0,balA:0,balC:0};
+    M.status.forEach(function(s){var a=s[2]*s[3];if(s[0]==="BILLED"){T.bilA+=a;T.bilC+=s[3]}else{T.balA+=a;T.balC+=s[3]}});
+    var totA=T.bilA+T.balA,totC=T.bilC+T.balC;
+
+    function tile(l,v,n,d){return '<div class="tile"><div class="lbl">'+l+'</div><div class="val">'+v+'</div><div class="note">'+n+'</div>'+(d?'<div class="def">'+d+'</div>':"")+'</div>'}
+    document.getElementById("tiles").innerHTML=
+      tile("Total activations \u00D7 SLI Fee",pmil(totA),num(totC)+" activations")+
+      tile("Billed \u00D7 SLI Fee",pmil(T.bilA),num(T.bilC)+" activations")+
+      tile("Balance \u00D7 SLI Fee",pmil(T.balA),num(T.balC)+" activations")+
+      tile("JO closing rate",pct(T.bilC,totC),num(T.bilC)+" billed of "+num(totC)+" JOs","By amount: "+pct(T.bilA,totA));
+
+    drawMonthly();
+
+    var sumA={bil:0,bal:0},sumC={bil:0,bal:0};
+    rows.forEach(function(r){sumA.bil+=r.bilA;sumA.bal+=r.balA;sumC.bil+=r.bilC;sumC.bal+=r.balC});
+    var th="<tr><th>Month</th><th>Billed</th><th>Balance</th><th>Total</th><th>Closing rate</th></tr>";
+    var tb=rows.map(function(r){return "<tr><td>"+esc(r.m)+"</td><td>"+peso(r.bilA)+"</td><td>"+peso(r.balA)+"</td><td>"+peso(r.bilA+r.balA)+"</td><td>"+pct(r.bilC,r.bilC+r.balC)+"</td></tr>"}).join("");
+    var nd={bilA:T.bilA-sumA.bil,balA:T.balA-sumA.bal,bilC:T.bilC-sumC.bil,balC:T.balC-sumC.bal};
+    if(nd.bilC||nd.balC)tb+="<tr><td>No date</td><td>"+peso(nd.bilA)+"</td><td>"+peso(nd.balA)+"</td><td>"+peso(nd.bilA+nd.balA)+"</td><td>"+pct(nd.bilC,nd.bilC+nd.balC)+"</td></tr>";
+    tb+="<tr><td><b>All</b></td><td>"+peso(T.bilA)+"</td><td>"+peso(T.balA)+"</td><td>"+peso(totA)+"</td><td>"+pct(T.bilC,totC)+"</td></tr>";
+    document.getElementById("mtable").innerHTML=th+tb;
+
+    var by={};
+    M.status.forEach(function(s){if(s[0]!=="BALANCE")return;var o=by[s[1]]||(by[s[1]]={a:0,c:0});o.a+=s[2]*s[3];o.c+=s[3]});
+    var ST=Object.keys(by).map(function(k){return[k.charAt(0)+k.slice(1).toLowerCase(),by[k].a,by[k].c]}).sort(function(a,b){return b[1]-a[1]});
+    var smax=ST.length?ST[0][1]:1;
+    document.getElementById("status").innerHTML=ST.map(function(s){return '<div class="row"><div class="name">'+esc(s[0])+'</div><div class="track"><div class="fill" style="width:'+Math.max(1.5,100*s[1]/smax)+'%"></div></div><div class="n">'+pmil(s[1])+'<span class="sm">'+num(s[2])+' rows</span></div></div>'}).join("");
+    document.getElementById("noreport").innerHTML="<b>"+num(M.noReport)+" of the "+num(T.balC)+"</b> balance rows are tagged <b>NO REPORT</b>. They have not been billed because no installation report was received.";
+
+    recs=M.partners.map(function(p){var bc=cnt(p.bil),lc=cnt(p.bal),ba=amt(p.bil),la=amt(p.bal);
+      return{name:p.name,bc:bc,lc:lc,n:bc+lc,ba:ba,la:la,ta:ba+la,rate:(bc+lc)?bc/(bc+lc):0}});
+    var top=recs.slice().sort(function(a,b){return b.la-a.la}).slice(0,10),tmax=top.length?top[0].la||1:1;
+    document.getElementById("partners").innerHTML=top.map(function(p){return '<div class="row"><div class="name" title="'+esc(p.name)+'">'+esc(p.name)+'</div><div class="track"><div class="fill" style="width:'+(100*p.la/tmax)+'%"></div></div><div class="n">'+pmil(p.la)+'<span class="sm">'+num(p.lc)+' rows</span></div></div>'}).join("");
+    drawP(); setBar();
+  }
+
+  render();
+  sync();
+  setInterval(function(){if(!document.hidden&&live)sync()},REFRESH_MS);
+  document.addEventListener("visibilitychange",function(){if(!document.hidden&&live)sync()});
 })();
 </script>
-
-</body></html>
